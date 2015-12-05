@@ -44,7 +44,10 @@ if (DEFINED PEBBLE_INCLUDE_DIR)
 	add_custom_target(pebble-build
 			ALL ${PEBBLE_PROGRAM} build
 			WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
-	
+
+	add_custom_target(pebble-logs
+			ALL ${PEBBLE_PROGRAM} logs --phone=${PEBBLE_PHONE})
+
 	# pebble-clean depends on clean 
 	add_custom_target(pebble-clean ${PEBBLE_PROGRAM} clean
 			WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
