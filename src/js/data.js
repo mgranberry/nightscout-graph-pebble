@@ -171,7 +171,7 @@ var Data = function(c) {
 
   d.getRigBatteryLevel = function(config, callback) {
     if (deviceStatus) {
-      callback(null, 'Rig ' + deviceStatus['uploaderBattery'] + '%');
+      callback(null, deviceStatus['uploaderBattery'] + '%');
     } else {
       callback(null, '-');
     }
@@ -181,17 +181,19 @@ var Data = function(c) {
     if (sgvs && sgvs.length >= 2 && cal) {
       callback(null, sgvs.slice(0, 3)
               .map(function(sgv) { return _getRawMgdl(sgv) })
-              .reverse()
+              .map(function(mgdl) {
+                return (config.mmol && !isNaN(mgdl)) ? (mgdl / 18.0).toFixed(1) : mgdl;
+              }).reverse()
               .join(" ") + " " + deviceStatus['uploaderBattery'] + '%');
     } else {
       callback(null, '-');
     }
   };
 
-  function _getRawMgdl(sgv) {
+  function _getRawMgdl(sgv, cal) {
     if (sgv.unfiltered) {
       if (sgv.mgdl && sgv.mgdl >= 40 && sgv.mgdl <= 400 && sgv.filtered) {
-        var ratio = cal.scale * (sgv.filtered - cal.intercept) / cal.slope / sgv.sgv;
+        var ratio = cal.scale * (sgv.filtered - cal.intercept) / cal.slope / sgv.mgdl;
         return Math.round(cal.scale * (sgv.unfiltered - cal.intercept) / cal.slope / ratio);
       } else {
         return Math.round(cal.scale * (sgv.unfiltered - cal.intercept) / cal.slope);
@@ -200,6 +202,21 @@ var Data = function(c) {
       return undefined;
     }
   }
+
+  d.getRigBatteryAndRawData = function(config, callback) {
+    d.getRigBatteryLevel(config, function(err, battery) {
+      if (err) {
+        return callback(err);
+      }
+      d.getRawData(config, function(err, raw) {
+        if (err) {
+          return callback(err);
+        }
+        var line = [battery, raw].filter(function(v) { return v !== '-'; }).join(' ') || '-';
+        callback(null, line);
+      });
+    });
+  };
 
   function _getCurrentProfileBasal(config, callback) {
     // Handle different treatment API formats
@@ -252,7 +269,7 @@ var Data = function(c) {
     }
   }
 
-  d.getCurrentBasal = function(config, callback) {
+  d.getActiveBasal = function(config, callback) {
     // adapted from @audiefile: https://github.com/mddub/nightscout-graph-pebble/pull/1
     _getCurrentProfileBasal(config, function(err, profileBasal) {
       if (err) {
@@ -276,14 +293,15 @@ var Data = function(c) {
   };
 
   d.getStatusText = function(config, callback) {
-    var defaultFn = d.getIOB;
+    var defaultFn = d.getRigBatteryLevel;
     var fn = {
-      'pumpiob': d.getIOB,
-      'basal': d.getCurrentBasal,
       'rigbattery': d.getRigBatteryLevel,
       'rawdata': d.getRawData,
-      'customtext': d.getCustomText,
+      'rig-raw': d.getRigBatteryAndRawData,
+      'basal': d.getActiveBasal,
+      'pumpiob': d.getIOB,
       'customurl': d.getCustomUrl,
+      'customtext': d.getCustomText,
     }[config.statusContent];
     (fn || defaultFn)(config, callback);
   };
