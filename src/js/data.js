@@ -190,7 +190,7 @@ var Data = function(c) {
     }
   };
 
-  function _getRawMgdl(sgv, cal) {
+  function _getRawMgdl(sgv) {
     if (sgv.unfiltered) {
       if (sgv.mgdl && sgv.mgdl >= 40 && sgv.mgdl <= 400 && sgv.filtered) {
         var ratio = cal.scale * (sgv.filtered - cal.intercept) / cal.slope / sgv.mgdl;
