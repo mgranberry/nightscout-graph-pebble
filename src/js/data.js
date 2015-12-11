@@ -5,6 +5,24 @@
 var Data = function(c) {
   var d = {};
 
+  function _reviveItem(key) {
+    try {
+      return JSON.parse(localStorage.getItem(key));
+    } catch (e) {
+      return undefined;
+    }
+  }
+
+  function _cacheItem(key, value) {
+    localStorage.setItem(key, JSON.stringify(value));
+  }
+
+  var sgvs = _reviveItem("sgvs") || [];
+  var cal = _reviveItem("cal") || undefined;
+  var treatments = _reviveItem("treatments") || [];
+  var deviceStatus = _reviveItem("deviceStatus") || [];
+  var profiles = _reviveItem("profiles") || [];
+  var tempBasals = _reviveItem("tempBasals") || [];
   // In PebbleKit JS, specifying a timeout works only for synchronous XHR,
   // except on Android, where synchronous XHR doesn't work at all.
   // https://forums.getpebble.com/discussion/13224/problem-with-xmlhttprequest-timeout
@@ -89,58 +107,72 @@ var Data = function(c) {
   };
 
   d.getRigBatteryLevel = function(config, callback) {
-    d.getJSON(config.nightscout_url + '/api/v1/devicestatus.json?find[uploaderBattery][$exists]=true&count=1', function(err, deviceStatus) {
-      if (err) {
-        return callback(err);
+    callback(null, _getDeviceStatusString());
+    d.getJSON(config.nightscout_url + '/api/v1/devicestatus.json?find[uploaderBattery][$exists]=true&count=1', function (err, newDeviceStatus) {
+      if (newDeviceStatus && newDeviceStatus.length >= 1) {
+        deviceStatus = newDeviceStatus;
+        _cacheItem("deviceStatus", newDeviceStatus);
       }
-      if (deviceStatus && deviceStatus.length && new Date(deviceStatus[0]['created_at']) >= new Date() - c.DEVICE_STATUS_RECENCY_THRESHOLD_SECONDS * 1000) {
-        callback(null, deviceStatus[0]['uploaderBattery'] + '%');
-      } else {
-        callback(null, '-');
-      }
+      callback(null, _getDeviceStatusString());
     });
   };
 
+
+  function _getDeviceStatusString() {
+    if (deviceStatus && deviceStatus.length >= 1 && new Date(deviceStatus[0]['created_at']) >= new Date() - c.DEVICE_STATUS_RECENCY_THRESHOLD_SECONDS * 1000) {
+      return deviceStatus[0]['uploaderBattery'] + '%';
+    } else {
+      return "-";
+    }
+  }
+
+
   d.getRawData = function(config, callback) {
-    d.getJSON(config.nightscout_url + '/api/v1/entries/cal.json?count=1', function(err, calRecord) {
-      if (err) {
-        return callback(err);
-      }
-      if (calRecord && calRecord.length && calRecord.length > 0) {
-        d.getJSON(config.nightscout_url + '/api/v1/entries/sgv.json?count=2', function(err, sgvRecords) {
-          if (err) {
+    _getCal(config, function (err) {
+          if (sgvs && sgvs.length >= 2 && cal) {
+            callback(null, sgvs.slice(0, 3)
+                .map(_getRawMgdl)
+                .map(function (mgdl) {
+                  return (config.mmol && !isNaN(mgdl)) ? (mgdl / 18.0).toFixed(1) : mgdl;
+                }).reverse()
+                .join(" "));
+          } else if (err) {
             return callback(err);
-          }
-          if (sgvRecords && sgvRecords.length) {
-            var noiseStr = c.DEXCOM_NOISE_STRINGS[sgvRecords[0]['noise']];
-
-            sgvRecords.sort(function(a, b) {
-              return a['date'] - b['date'];
-            });
-            var sgvString = sgvRecords.map(function(bg) {
-              return _getRawMgdl(bg, calRecord[0]);
-            }).map(function(mgdl) {
-              return (config.mmol && !isNaN(mgdl)) ? (mgdl / 18.0).toFixed(1) : mgdl;
-            }).join(' ');
-
-            callback(null, (noiseStr ? noiseStr + ' ' : '') + sgvString);
           } else {
             callback(null, '-');
           }
-        });
-      } else {
-        callback(null, '-');
-      }
-    });
+        }
+    );
   };
 
-  function _getRawMgdl(sgvRecord, calRecord) {
-    if (sgvRecord.unfiltered) {
-      if (sgvRecord.sgv && sgvRecord.sgv >= 40 && sgvRecord.sgv <= 400 && sgvRecord.filtered) {
-        var ratio = calRecord.scale * (sgvRecord.filtered - calRecord.intercept) / calRecord.slope / sgvRecord.sgv;
-        return Math.round(calRecord.scale * (sgvRecord.unfiltered - calRecord.intercept) / calRecord.slope / ratio);
+  function _getCal(config, callback) {
+    var dateString = "";
+    if (cal) {
+      console.log("cached cal:" + JSON.stringify(cal));
+      callback(null, cal);
+      dateString = "&find[dateString][$gt]=" + cal["dateString"];
+    }
+    d.getJSON(config.nightscout_url + '/api/v1/entries/cal.json?count=1'+dateString, function(err, calRecords) {
+      if (err) {
+        return callback(err);
+      }
+      console.log("cal length:" + calRecords.length);
+      if (calRecords && calRecords.length > 0) {
+        cal = calRecords[0];
+        console.log("caching cal: " + JSON.stringify(cal));
+        _cacheItem("cal", cal);
+        callback(null, cal);
+      }
+    });
+  }
+
+  function _getRawMgdl(sgv) {
+    if (sgv.unfiltered) {
+      if (sgv.mgdl && sgv.mgdl >= 40 && sgv.mgdl <= 400 && sgv.filtered) {
+        var ratio = cal.scale * (sgv.filtered - cal.intercept) / cal.slope / sgv.mgdl;
+        return Math.round(cal.scale * (sgv.unfiltered - cal.intercept) / cal.slope / ratio);
       } else {
-        return Math.round(calRecord.scale * (sgvRecord.unfiltered - calRecord.intercept) / calRecord.slope);
+        return Math.round(cal.scale * (sgv.unfiltered - cal.intercept) / cal.slope);
       }
     } else {
       return undefined;
@@ -258,18 +290,33 @@ var Data = function(c) {
   };
 
   d.getSGVsDateDescending = function(config, callback) {
-    var fetchStart = Date.now() - c.SGV_FETCH_SECONDS * 1000;
-    var points = c.SGV_FETCH_SECONDS / c.INTERVAL_SIZE_SECONDS + c.FETCH_EXTRA;
-    var url = config.nightscout_url + '/api/v1/entries/sgv.json?find[date][$gte]=' + fetchStart + '&count=' + points;
-    d.getJSON(url, function(err, entries) {
-      if (err) {
-        return callback(err);
-      }
-      callback(null, entries.map(function(e) {
-        e['date'] = e['date'] / 1000;
-        return e;
-      }));
-    });
+    var filterStart = Date.now() - c.SGV_FETCH_SECONDS * 1000;
+    var fetchStart = sgvs[0] ? sgvs[0]['mills'] : filterStart;
+    var points = ~~((Date.now() - fetchStart) / 1000 / c.INTERVAL_SIZE_SECONDS + c.FETCH_EXTRA);
+    var url = config.nightscout_url + '/api/v1/entries/sgv.json?find[date][$gt]=' + fetchStart + '&count=' + points;
+    if (points > c.FETCH_EXTRA) {
+      if (sgvs[0])
+        callback(null, sgvs); // callback early if cached data is available
+      d.getJSON(url, function (err, entries) {
+        if (err) {
+          return callback(err);
+        }
+        console.log("sgv length:"+entries.length);
+
+        sgvs = entries.map(function (e) {
+          e['mgdl'] = e['sgv'];
+          e['mills'] = e['date'];
+          e['date'] = e['date'] / 1000;
+          return e;
+        }).concat(sgvs).filter(function (e) {
+          return e['mills'] >= filterStart;
+        });
+        _cacheItem('sgvs', sgvs);
+        callback(null, sgvs);
+      });
+    } else {
+      callback(null, sgvs);
+    }
   };
 
   return d;
